@@ -1,0 +1,36 @@
+# Ingestion foundation for Phase 1. Source-specific normalization is added in Phase 2.
+
+[sources.syslog_udp]
+type = "syslog"
+address = "0.0.0.0:5514"
+mode = "udp"
+
+[sources.syslog_tcp]
+type = "syslog"
+address = "0.0.0.0:5514"
+mode = "tcp"
+
+[sources.http_ingest]
+type = "http_server"
+address = "0.0.0.0:8080"
+encoding = "json"
+path = "/ingest"
+
+[sinks.raw_events]
+type = "elasticsearch"
+inputs = ["syslog_udp", "syslog_tcp", "http_ingest"]
+endpoints = ["http://opensearch:9200"]
+mode = "bulk"
+bulk.index = "home-soc-raw-%Y.%m.%d"
+compression = "none"
+
+[sinks.raw_events.auth]
+strategy = "basic"
+user = "admin"
+password = "${OPENSEARCH_ADMIN_PASSWORD}"
+
+[sinks.raw_events.tls]
+verify_certificate = false
+
+[sinks.raw_events.encoding]
+codec = "json"

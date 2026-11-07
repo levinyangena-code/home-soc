@@ -1,0 +1,185 @@
+services:
+  vector:
+    image: timberio/vector:0.41.1-debian
+    container_name: home-soc-vector
+    restart: unless-stopped
+    command: ["--config", "/etc/vector/vector.toml"]
+    environment:
+      OPENSEARCH_ADMIN_PASSWORD: ${OPENSEARCH_ADMIN_PASSWORD:?Set OPENSEARCH_ADMIN_PASSWORD in .env}
+    volumes:
+      - ./ingest/vector.toml:/etc/vector/vector.toml:ro
+    ports:
+      # Keep Vector unprivileged in-container; expose standard syslog port on host.
+      - "514:5514/udp"
+      - "514:5514/tcp"
+      - "8080:8080/tcp"
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    networks:
+      - soc
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "vector", "validate", "--config", "/etc/vector/vector.toml"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  opensearch:
+    image: opensearchproject/opensearch:2.17.1
+    container_name: home-soc-opensearch
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      bootstrap.memory_lock: "true"
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: ${OPENSEARCH_ADMIN_PASSWORD:?Set OPENSEARCH_ADMIN_PASSWORD in .env}
+      plugins.security.ssl.http.enabled: "false"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    networks:
+      - soc
+    read_only: false
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "1.50"
+          memory: 1G
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl --fail --silent --insecure
+          -u "admin:$${OPENSEARCH_INITIAL_ADMIN_PASSWORD}"
+          "http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s"
+          >/dev/null
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
+
+  postgres:
+    image: postgres:16.6-alpine
+    container_name: home-soc-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - soc
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Phase 1 health endpoint placeholder; detection behavior is added in Phase 3.
+  detection-engine:
+    image: python:3.12.8-slim
+    container_name: home-soc-detection-engine
+    restart: unless-stopped
+    working_dir: /app
+    command: ["python", "health_server.py", "9100"]
+    volumes:
+      - ./detection/health_server.py:/app/health_server.py:ro
+    expose:
+      - "9100"
+    networks:
+      - soc
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9100/health', timeout=2)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Phase 1 health endpoint placeholder; FastAPI/UI is added in Phase 4.
+  api-ui:
+    image: python:3.12.8-slim
+    container_name: home-soc-api-ui
+    restart: unless-stopped
+    working_dir: /app
+    command: ["python", "health_server.py", "8000"]
+    volumes:
+      - ./api/health_server.py:/app/health_server.py:ro
+    ports:
+      - "${UI_HOST:-127.0.0.1}:${UI_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      detection-engine:
+        condition: service_healthy
+    networks:
+      - soc
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  opensearch-data:
+  postgres-data:
+
+networks:
+  soc:
+    name: home-soc-private
+    driver: bridge
+    internal: true
